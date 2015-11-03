@@ -242,6 +242,7 @@ void expand_env_esc(char_u *srcp, char_u *dst, int dstlen, bool esc, bool one,
         case WRDE_SYNTAX:
             // these are typically fatal, abort
             STRCPY(dst, srcp);
+            wordfree(&result);
             return;
         case WRDE_BADVAL:
         case WRDE_CMDSUB:
@@ -252,8 +253,36 @@ void expand_env_esc(char_u *srcp, char_u *dst, int dstlen, bool esc, bool one,
     if(result.we_wordc == 0) {
         // nothing got substituted, we can just copy src right back to destination
         STRCPY(dst, srcp);
-    } else {
+    } else if (result.we_wordc == 1) {
         STRCPY(dst, result.we_wordv[0]);
+    } else {
+        // we want to space-separate all words
+        // first, let's get total length
+        size_t total_len = 0;
+        size_t lengths[result.we_wordc];
+        for(int i=0; i<result.we_wordc; i++)
+        {
+            lengths[i] = strlen(result.we_wordv[i]);
+            total_len += lengths[i];
+        }
+        if(total_len > (size_t)MAXPATHL) {
+            // abort
+            STRCPY(dst, srcp);
+        } else {
+            // combined length of words + space for each + null terminator char included in spaces
+            char buf[total_len + result.we_wordc];
+            size_t cur_offset = 0;
+            for(int i=0; i<result.we_wordc; i++)
+            {
+                strncpy(&buf[cur_offset], result.we_wordv[i], lengths[i]);
+                cur_offset += lengths[i];
+                buf[cur_offset] = ' ';
+                cur_offset++;
+            }
+            //cur_offset should be equal to total_len + result.we_wordc
+            buf[cur_offset] = '\0';
+            STRCPY(dst, buf);
+        }
     }
     wordfree(&result);
 #elif defined(__WIN32)
