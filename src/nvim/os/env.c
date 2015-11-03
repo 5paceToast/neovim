@@ -4,6 +4,8 @@
 
 #include <uv.h>
 
+#include <wordexp.h>
+
 // vim.h must be included before charset.h (and possibly others) or things
 // blow up
 #include "nvim/vim.h"
@@ -216,168 +218,45 @@ void expand_env(char_u *src, char_u *dst, int dstlen)
 void expand_env_esc(char_u *srcp, char_u *dst, int dstlen, bool esc, bool one,
                     char_u *startstr)
 {
-  char_u      *src;
-  char_u      *tail;
-  int c;
-  char_u      *var;
-  bool copy_char;
-  bool mustfree;  // var was allocated, need to free it later
-  bool at_start = true;  // at start of a name
-  int startstr_len = 0;
+#if !defined(__WIN32) && (defined(__unix__) || defined(__unix) || (defined(__APPLE__) && defined(__MACH__)))
+    // we can use wordexp.h
+    wordexp_t result;
+    char * src = (char*)skipwhite(srcp);
+    size_t len = strlen(src);
+    if(len < 1 || len > (size_t)dstlen) {// NOTE: comapring size_t to int, best solution?
+        // either empty, or too long, so we abort
+        STRCPY(dst, srcp);
+        return;
+    }
+    int res = wordexp(src, &result, 0);
+    
+    switch(res)
+    {
+        case WRDE_BADCHAR:
+        case WRDE_NOSPACE:
+        case WRDE_SYNTAX:
+            // these are typically fatal, abort
+            STRCPY(dst, srcp);
+            return;
+        case WRDE_BADVAL:
+        case WRDE_CMDSUB:
+            // these typically don't matter, and depend on specific wordexp flags
+            break;
+    }
 
-  if (startstr != NULL)
-    startstr_len = (int)STRLEN(startstr);
-
-  src = skipwhite(srcp);
-  --dstlen;  // leave one char space for "\,"
-  while (*src && dstlen > 0) {
-    copy_char = true;
-    if ((*src == '$') || (*src == '~' && at_start)) {
-      mustfree = false;
-
-      // The variable name is copied into dst temporarily, because it may
-      // be a string in read-only memory and a NUL needs to be appended.
-      if (*src != '~') {  // environment var
-        tail = src + 1;
-        var = dst;
-        c = dstlen - 1;
-
-#ifdef UNIX
-        // Unix has ${var-name} type environment vars
-        if (*tail == '{' && !vim_isIDc('{')) {
-          tail++;               /* ignore '{' */
-          while (c-- > 0 && *tail && *tail != '}')
-            *var++ = *tail++;
-        } else // NOLINT
-#endif
-        {
-          while (c-- > 0 && *tail != NUL && vim_isIDc(*tail)) {
-            *var++ = *tail++;
-          }
-        }
-
-#if defined(UNIX)
-        // Verify that we have found the end of a UNIX ${VAR} style variable
-        if (src[1] == '{' && *tail != '}') {
-          var = NULL;
-        } else {
-          if (src[1] == '{') {
-            ++tail;
-          }
-#endif
-        *var = NUL;
-        var = (char_u *)vim_getenv((char *)dst);
-        mustfree = true;
-#if defined(UNIX)
-        }
-#endif
-      } else if (  src[1] == NUL /* home directory */
-                 || vim_ispathsep(src[1])
-                 || vim_strchr((char_u *)" ,\t\n", src[1]) != NULL) {
-        var = homedir;
-        tail = src + 1;
-      } else {  // user directory
-#if defined(UNIX)
-        // Copy ~user to dst[], so we can put a NUL after it.
-        tail = src;
-        var = dst;
-        c = dstlen - 1;
-        while (    c-- > 0
-                   && *tail
-                   && vim_isfilec(*tail)
-                   && !vim_ispathsep(*tail))
-          *var++ = *tail++;
-        *var = NUL;
-        // Use os_get_user_directory() to get the user directory.
-        // If this function fails, the shell is used to
-        // expand ~user. This is slower and may fail if the shell
-        // does not support ~user (old versions of /bin/sh).
-        var = (char_u *)os_get_user_directory((char *)dst + 1);
-        mustfree = true;
-        if (var == NULL)
-        {
-          expand_T xpc;
-
-          ExpandInit(&xpc);
-          xpc.xp_context = EXPAND_FILES;
-          var = ExpandOne(&xpc, dst, NULL,
-              WILD_ADD_SLASH|WILD_SILENT, WILD_EXPAND_FREE);
-          mustfree = true;
-        }
+    if(result.we_wordc == 0) {
+        // nothing got substituted, we can just copy src right back to destination
+        STRCPY(dst, srcp);
+    } else {
+        STRCPY(dst, result.we_wordv[0]);
+    }
+    wordfree(&result);
+#elif defined(__WIN32)
+    // we should use ExpandEnvironmentStrings
+    // stub
 #else
-        // cannot expand user's home directory, so don't try
-        var = NULL;
-        tail = (char_u *)"";  // for gcc
-#endif  // UNIX
-      }
-
-#ifdef BACKSLASH_IN_FILENAME
-      // If 'shellslash' is set change backslashes to forward slashes.
-      // Can't use slash_adjust(), p_ssl may be set temporarily.
-      if (p_ssl && var != NULL && vim_strchr(var, '\\') != NULL) {
-        char_u  *p = vim_strsave(var);
-
-        if (mustfree) {
-          xfree(var);
-        }
-        var = p;
-        mustfree = true;
-        forward_slash(var);
-      }
+    // more stub
 #endif
-
-      // If "var" contains white space, escape it with a backslash.
-      // Required for ":e ~/tt" when $HOME includes a space.
-      if (esc && var != NULL && vim_strpbrk(var, (char_u *)" \t") != NULL) {
-        char_u  *p = vim_strsave_escaped(var, (char_u *)" \t");
-
-        if (mustfree)
-          xfree(var);
-        var = p;
-        mustfree = true;
-      }
-
-      if (var != NULL && *var != NUL
-          && (STRLEN(var) + STRLEN(tail) + 1 < (unsigned)dstlen)) {
-        STRCPY(dst, var);
-        dstlen -= (int)STRLEN(var);
-        c = (int)STRLEN(var);
-        // if var[] ends in a path separator and tail[] starts
-        // with it, skip a character
-        if (*var != NUL && after_pathsep((char *)dst, (char *)dst + c)
-#if defined(BACKSLASH_IN_FILENAME)
-            && dst[-1] != ':'
-#endif
-            && vim_ispathsep(*tail))
-          ++tail;
-        dst += c;
-        src = tail;
-        copy_char = false;
-      }
-      if (mustfree)
-        xfree(var);
-    }
-
-    if (copy_char) {  // copy at least one char
-      // Recognize the start of a new name, for '~'.
-      // Don't do this when "one" is true, to avoid expanding "~" in
-      // ":edit foo ~ foo".
-      at_start = false;
-      if (src[0] == '\\' && src[1] != NUL) {
-        *dst++ = *src++;
-        --dstlen;
-      } else if ((src[0] == ' ' || src[0] == ',') && !one) {
-        at_start = true;
-      }
-      *dst++ = *src++;
-      --dstlen;
-
-      if (startstr != NULL && src - startstr_len >= srcp
-          && STRNCMP(src - startstr_len, startstr, startstr_len) == 0)
-        at_start = true;
-    }
-  }
-  *dst = NUL;
 }
 
 /// Check if the directory "vimdir/<version>" or "vimdir/runtime" exists.
