@@ -4,7 +4,12 @@
 
 #include <uv.h>
 
-#include <wordexp.h>
+// TODO(5pacetoast): move to just including os_defs.h maybe?
+#if !defined(__WIN32) && (defined(__unix__) || defined(__unix) || (defined(__APPLE__) && defined(__MACH__)))
+#include <wordexp.h> // TODO(5pacetoast): move to unix_defs.h?
+#elif defined(__WIN32)
+#include <win_defs.h> // contains windows.h include
+#endif
 
 // vim.h must be included before charset.h (and possibly others) or things
 // blow up
@@ -253,7 +258,11 @@ void expand_env_esc(char_u *srcp, char_u *dst, int dstlen, bool esc, bool one,
     wordfree(&result);
 #elif defined(__WIN32)
     // we should use ExpandEnvironmentStrings
-    // stub
+    const char * src = (char *) skipwhite(srcp);
+    char * out = xmalloc(MAXPATHL+1);
+    ::ExpandEnvironmentStrings(src, out, MAXPATHL+1);
+    STRCPY(dst, out);
+    xfree(out);
 #else
     // more stub
 #endif
