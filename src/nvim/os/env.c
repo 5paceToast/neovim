@@ -6,9 +6,11 @@
 
 // TODO(5pacetoast): move to just including os_defs.h maybe?
 #ifdef WIN32
-#include <win_defs.h> // contains windows.h include
+# include <win_defs.h> // contains windows.h include
+#elif defined(HAVE_WORDEXP_H)
+# include <wordexp.h>
 #else
-#include <wordexp.h> // TODO(5pacetoast): move to unix_defs.h?
+# include nvim/lib/wordexp.h
 #endif
 
 // vim.h must be included before charset.h (and possibly others) or things
